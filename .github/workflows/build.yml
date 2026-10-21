@@ -1,0 +1,54 @@
+name: Build iPhone app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen
+
+      - name: Build (no signing)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Tafsiri.xcodeproj \
+            -scheme Tafsiri \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tee build.log | grep -E "error:|warning: |BUILD" || true
+          test -d build/Build/Products/Release-iphoneos/Tafsiri.app
+
+      - name: Package Tafsiri.ipa
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/Tafsiri.app Payload/
+          zip -qr Tafsiri.ipa Payload
+
+      - name: Upload Tafsiri.ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tafsiri-ipa
+          path: Tafsiri.ipa
+
+      - name: Upload build log (for fixing errors)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
