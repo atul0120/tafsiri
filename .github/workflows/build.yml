@@ -12,6 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Use the .swift files uploaded to the main page
+        run: |
+          if ls *.swift >/dev/null 2>&1; then
+            cp -f *.swift Tafsiri/
+            echo "Copied main-page .swift files into Tafsiri/"
+          fi
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
