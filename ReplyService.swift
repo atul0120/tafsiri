@@ -47,7 +47,12 @@ enum ReplyService {
             }
             parts.append(unescape(translated))
         }
-        return parts.joined(separator: " ")
+        let result = parts.joined(separator: " ")
+        // The free service sometimes hands the text back untranslated. Never pass that on as "English".
+        if normalized(result) == normalized(text) {
+            throw Failure(message: "Couldn't translate that sentence. Try again, or choose another option in Settings → Translate with.")
+        }
+        return result
     }
 
     private static func chunks(_ text: String, maxBytes: Int) -> [String] {
@@ -64,6 +69,10 @@ enum ReplyService {
         }
         if !current.isEmpty { out.append(current) }
         return out
+    }
+
+    private static func normalized(_ s: String) -> String {
+        s.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     private static func unescape(_ s: String) -> String {

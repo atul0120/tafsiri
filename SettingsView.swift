@@ -6,7 +6,7 @@ struct SettingsView: View {
 
     @AppStorage(Prefs.Key.model) private var model = Prefs.accurateModel
     @AppStorage(Prefs.Key.speakAloud) private var speakAloud = true
-    @AppStorage(Prefs.Key.showOriginal) private var showOriginal = true
+    @AppStorage(Prefs.Key.showOriginal) private var showOriginal = false
     @AppStorage(Prefs.Key.onlySwahili) private var onlySwahili = true
     @AppStorage(Prefs.Key.assumeSwahili) private var assumeSwahili = false
     @AppStorage(Prefs.Key.pauseSeconds) private var pauseSeconds = 0.8
@@ -56,7 +56,7 @@ struct SettingsView: View {
                 Section {
                     Toggle("Read translations aloud", isOn: $speakAloud)
                     Toggle("Only translate Kiswahili", isOn: $onlySwahili)
-                    Toggle("Show the Kiswahili words too", isOn: $showOriginal)
+                    Toggle("Also show the Kiswahili words (small)", isOn: $showOriginal)
                 } header: {
                     Text("Listening")
                 } footer: {

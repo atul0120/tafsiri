@@ -33,8 +33,14 @@ actor Interpreter {
         let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
         let text = Self.clean(results.map(\.text).joined(separator: " "))
         guard !text.isEmpty else { return nil }
-        let language = assumeSwahili ? "sw" : (results.first?.language ?? "sw")
-        return Heard(language: language, text: text)
+        let detected = assumeSwahili ? "sw" : (results.first?.language ?? "sw")
+        if detected == "en" || detected == "sw" { return Heard(language: detected, text: text) }
+
+        // Whisper often mistakes Kiswahili for Indonesian, Malay, Somali and others.
+        // Anything that isn't English is treated as Kiswahili and written down again as Kiswahili.
+        let again = try await pipe.transcribe(audioArray: samples, decodeOptions: Self.options(language: "sw"))
+        let swText = Self.clean(again.map(\.text).joined(separator: " "))
+        return swText.isEmpty ? nil : Heard(language: "sw", text: swText)
     }
 
     /// Offline mode: Whisper translates the speech straight into English on the phone.
@@ -46,8 +52,15 @@ actor Interpreter {
         let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
         let text = Self.clean(results.map(\.text).joined(separator: " "))
         guard !text.isEmpty else { return nil }
-        let language = assumeSwahili ? "sw" : (results.first?.language ?? "sw")
-        return Heard(language: language, text: text)   // text is English here
+        let detected = assumeSwahili ? "sw" : (results.first?.language ?? "sw")
+        if detected == "en" || detected == "sw" { return Heard(language: detected, text: text) }
+
+        // Misdetected (often as Indonesian): translate again, telling Whisper it's Kiswahili.
+        var forced = Self.options(language: "sw")
+        forced.task = .translate
+        let again = try await pipe.transcribe(audioArray: samples, decodeOptions: forced)
+        let english = Self.clean(again.map(\.text).joined(separator: " "))
+        return english.isEmpty ? nil : Heard(language: "sw", text: english)   // text is English here
     }
 
     /// Writes down English speech (used when you reply).

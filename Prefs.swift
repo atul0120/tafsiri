@@ -38,7 +38,7 @@ enum Prefs {
         UserDefaults.standard.register(defaults: [
             Key.model: accurateModel,
             Key.speakAloud: true,
-            Key.showOriginal: true,
+            Key.showOriginal: false,
             Key.onlySwahili: true,
             Key.assumeSwahili: false,
             Key.pauseSeconds: 0.8,

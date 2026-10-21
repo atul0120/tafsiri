@@ -192,10 +192,7 @@ final class ListenEngine: ObservableObject {
                 return
             }
             guard Prefs.canReply else {
-                // No translator key yet: show what was said so the app is still useful.
-                lines.insert(Line(kind: .heard, english: heard.text, swahili: nil), at: 0)
-                trim()
-                status = "Showing Kiswahili only. Add your Microsoft key, or choose the free MyMemory translator in Settings."
+                status = "No English yet: choose MyMemory (free) in Settings → Translate with, or add your Microsoft key."
                 return
             }
             status = "Translating…"
