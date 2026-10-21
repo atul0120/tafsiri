@@ -101,7 +101,7 @@ struct LatestCard: View {
         let big = isReply ? (line.swahili ?? "") : line.english
         let small: String? = isReply ? line.english : line.swahili
         VStack(alignment: .leading, spacing: 10) {
-            Text(isReply ? "YOU SAID, IN KISWAHILI" : "THEY SAID")
+            Text(isReply ? "YOU SAID, IN KISWAHILI" : "THEY SAID, IN ENGLISH")
                 .font(.caption.weight(.bold)).tracking(1.2)
                 .foregroundStyle(.white.opacity(0.8))
             Text(big)

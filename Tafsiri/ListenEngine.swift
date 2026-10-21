@@ -39,9 +39,9 @@ final class ListenEngine: ObservableObject {
     func loadModel() async {
         if case .loading = modelState { return }
         modelState = .loading
-        status = "Getting the speech model ready. The first time it downloads about 600 MB, so use Wi-Fi."
+        status = "Preparing the speech model. The first time it downloads 600–950 MB and sets itself up for this iPhone, which can take 5–10 minutes. Keep the app open on Wi-Fi."
         do {
-            try await interpreter.load(model: Prefs.model)
+            try await interpreter.load(model: Prefs.effectiveModel)
             modelState = .ready
             status = isListening ? listeningText : "Ready. Tap Start."
         } catch {
@@ -106,7 +106,7 @@ final class ListenEngine: ObservableObject {
     /// Tap Reply, then speak English. The next pause sends it.
     func armReply() async {
         guard Prefs.canReply else {
-            status = "To reply in Kiswahili, add your free Microsoft Translator key in Settings."
+            status = "Add your Microsoft key, or choose the free MyMemory translator in Settings."
             return
         }
         if !isListening { await start() }
@@ -149,6 +149,11 @@ final class ListenEngine: ObservableObject {
     private func enqueue(_ samples: [Float]) {
         let isReply = replyArmed
         if isReply { replyArmed = false }
+        // Never let a backlog build up: if two sentences are already waiting, skip this one.
+        if !isReply && pending >= 2 {
+            status = "Still working on the last sentence, skipped one."
+            return
+        }
         pending += 1
         let previous = pipeline
         pipeline = Task { [weak self] in
@@ -168,22 +173,58 @@ final class ListenEngine: ObservableObject {
                 return
             }
 
-            guard let out = try await interpreter.process(samples,
-                                                          assumeSwahili: Prefs.assumeSwahili,
-                                                          wantOriginal: Prefs.showOriginal) else { return }
-            if out.language == "en" {
-                // Whisper's "translation" of English is just the English text.
-                if Prefs.autoReply && Prefs.canReply { await sendReply(out.english) }
+            if Prefs.engine == .offline {
+                await handleOffline(samples)
+                return
+            }
+
+            guard let heard = try await interpreter.listen(samples, assumeSwahili: Prefs.assumeSwahili) else {
+                status = listeningText
+                return
+            }
+            if heard.language == "en" {
+                if Prefs.autoReply && Prefs.canReply { await sendReply(heard.text) }
                 else { status = "Heard English, skipped." }
                 return
             }
-            if Prefs.onlySwahili && !Prefs.assumeSwahili && out.language != "sw" {
-                status = "Heard another language (\(out.language)), skipped."
+            if Prefs.onlySwahili && !Prefs.assumeSwahili && heard.language != "sw" {
+                status = "Heard another language (\(heard.language)), skipped."
                 return
             }
-            lines.insert(Line(kind: .heard, english: out.english, swahili: out.original), at: 0)
+            guard Prefs.canReply else {
+                status = "No English yet: choose MyMemory (free) in Settings → Translate with, or add your Microsoft key."
+                return
+            }
+            status = "Translating…"
+            let english = try await ReplyService.translateToEnglish(heard.text)
+            lines.insert(Line(kind: .heard, english: english,
+                              swahili: Prefs.showOriginal ? heard.text : nil), at: 0)
             trim()
-            if Prefs.speakAloud { await sayEnglish(out.english) }
+            if Prefs.speakAloud { await sayEnglish(english) }
+            status = listeningText
+        } catch {
+            status = "Translation error: \(error.localizedDescription)"
+        }
+    }
+
+    /// Offline: Whisper translates straight to English on the phone; no internet needed.
+    private func handleOffline(_ samples: [Float]) async {
+        do {
+            guard let heard = try await interpreter.translateOffline(samples, assumeSwahili: Prefs.assumeSwahili) else {
+                status = listeningText
+                return
+            }
+            if heard.language == "en" {
+                if Prefs.autoReply { await sendReply(heard.text) } else { status = "Heard English, skipped." }
+                return
+            }
+            if Prefs.onlySwahili && !Prefs.assumeSwahili && heard.language != "sw" {
+                status = "Heard another language (\(heard.language)), skipped."
+                return
+            }
+            lines.insert(Line(kind: .heard, english: heard.text, swahili: nil), at: 0)
+            trim()
+            if Prefs.speakAloud { await sayEnglish(heard.text) }
             status = listeningText
         } catch {
             status = "Translation error: \(error.localizedDescription)"
