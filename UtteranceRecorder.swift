@@ -16,7 +16,7 @@ final class UtteranceRecorder {
         get { queue.sync { paused } }
         set { queue.async { self.paused = newValue; if newValue { self.reset() } } }
     }
-    var pauseSeconds: Double = 0.8
+    var pauseSeconds: Double = 0.6
 
     private let engine = AVAudioEngine()
     private let queue = DispatchQueue(label: "tafsiri.recorder")

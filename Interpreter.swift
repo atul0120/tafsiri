@@ -34,11 +34,10 @@ actor Interpreter {
         let text = Self.clean(first.map(\.text).joined(separator: " "))
         guard !text.isEmpty else { return nil }
         let detected = forceSource ? source : (first.first?.language ?? source)
-        if detected == source || detected == target { return Heard(language: detected, text: text) }
-
-        let again = try await pipe.transcribe(audioArray: samples, decodeOptions: Self.options(language: source))
-        let forced = Self.clean(again.map(\.text).joined(separator: " "))
-        return forced.isEmpty ? nil : Heard(language: source, text: forced)
+        if detected == target { return Heard(language: target, text: text) }
+        // Anything else is theirs. A misdetected sentence (e.g. "Indonesian") is still written in
+        // their words, so use it as-is instead of running the model a second time (much faster).
+        return Heard(language: source, text: text)
     }
 
     /// Offline mode: Whisper translates speech straight into English on the phone.

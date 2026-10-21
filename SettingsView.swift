@@ -11,7 +11,7 @@ struct SettingsView: View {
     @AppStorage(Prefs.Key.model) private var model = Prefs.accurateModel
     @AppStorage(Prefs.Key.showOriginal) private var showOriginal = false
     @AppStorage(Prefs.Key.assumeSwahili) private var assumeSource = false
-    @AppStorage(Prefs.Key.pauseSeconds) private var pauseSeconds = 0.8
+    @AppStorage(Prefs.Key.pauseSeconds) private var pauseSeconds = 0.6
     @AppStorage(Prefs.Key.autoReply) private var autoReply = false
     @AppStorage(Prefs.Key.translatorRegion) private var translatorRegion = "southafricanorth"
     @AppStorage(Prefs.Key.speechRegion) private var speechRegion = "southafricanorth"
@@ -94,7 +94,7 @@ struct SettingsView: View {
                 Section {
                     Toggle("Also show the \(sourceName) words (small)", isOn: $showOriginal)
                     Toggle("Everyone around me speaks \(sourceName)", isOn: $assumeSource)
-                    Stepper(value: $pauseSeconds, in: 0.5...2.0, step: 0.1) {
+                    Stepper(value: $pauseSeconds, in: 0.4...2.0, step: 0.1) {
                         Text("Translate after a \(pauseSeconds, specifier: "%.1f") s pause")
                     }
                 } header: {

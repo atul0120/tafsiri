@@ -71,7 +71,7 @@ enum Prefs {
             Key.speakAloud: true,
             Key.showOriginal: false,
             Key.assumeSwahili: false,
-            Key.pauseSeconds: 0.8,
+            Key.pauseSeconds: 0.6,
             Key.autoReply: false,
             Key.translatorRegion: "southafricanorth",
             Key.speechRegion: "southafricanorth",
