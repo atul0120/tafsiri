@@ -11,6 +11,8 @@ struct ContentView: View {
     @State private var typing = false
     @State private var typedReply = ""
     @AppStorage(Prefs.Key.speakAloud) private var speakAloud = true
+    @AppStorage(Prefs.Key.sourceLang) private var source = "sw"
+    @AppStorage(Prefs.Key.targetLang) private var target = "en"
 
     var body: some View {
         NavigationStack {
@@ -22,7 +24,7 @@ struct ContentView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 12)
                 } else {
-                    EmptyState(engine: engine)
+                    EmptyState(engine: engine, source: Langs.name(source), target: Langs.name(target))
                 }
 
                 List {
@@ -34,7 +36,7 @@ struct ContentView: View {
                 }
                 .listStyle(.plain)
 
-                BottomBar(engine: engine, speakAloud: $speakAloud) { typing = true }
+                BottomBar(engine: engine, speakAloud: $speakAloud, replyLanguage: Langs.name(source)) { typing = true }
             }
             .navigationTitle("Tafsiri Live")
             .navigationBarTitleDisplayMode(.inline)
@@ -44,18 +46,22 @@ struct ContentView: View {
                         .accessibilityLabel("Clear conversation")
                         .disabled(engine.lines.isEmpty)
                 }
+                ToolbarItem(placement: .principal) {
+                    Text("\(Langs.name(source)) → \(Langs.name(target))")
+                        .font(.headline)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel("Settings")
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView(engine: engine) }
-            .alert("Reply in Kiswahili", isPresented: $typing) {
-                TextField("Type in English", text: $typedReply)
+            .alert("Reply in \(Langs.name(source))", isPresented: $typing) {
+                TextField("Type in \(Langs.name(target))", text: $typedReply)
                 Button("Translate & speak") { engine.reply(typed: typedReply); typedReply = "" }
                 Button("Cancel", role: .cancel) { typedReply = "" }
             } message: {
-                Text("Tafsiri translates it and speaks it in Kiswahili on the phone's speaker.")
+                Text("Tafsiri translates it and speaks it in \(Langs.name(source)).")
             }
             .task { if engine.modelState == .notLoaded { await engine.loadModel() } }
         }
@@ -77,6 +83,10 @@ struct StatusStrip: View {
                 .lineLimit(2)
             Spacer(minLength: 0)
             if case .loading = engine.modelState { ProgressView().controlSize(.small) }
+            Image(systemName: engine.headphonesConnected ? "headphones" : "speaker.wave.2")
+                .font(.footnote)
+                .foregroundStyle(engine.headphonesConnected ? Color.tafsiriGreen : .secondary)
+                .accessibilityLabel(engine.headphonesConnected ? "Headphones connected" : "No headphones")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -86,8 +96,7 @@ struct StatusStrip: View {
 
 extension ListenEngine {
     var statusColor: Color {
-        if replyArmed { return .tafsiriSun }
-        if hearingSpeech { return .tafsiriSun }
+        if replyArmed || hearingSpeech { return .tafsiriSun }
         return isListening ? .green : .secondary
     }
 }
@@ -98,10 +107,11 @@ struct LatestCard: View {
 
     var body: some View {
         let isReply = line.kind == .reply
-        let big = isReply ? (line.swahili ?? "") : line.english
-        let small: String? = isReply ? line.english : line.swahili
+        let big = isReply ? (line.theirs ?? "") : line.mine
+        let small: String? = isReply ? line.mine : line.theirs
         VStack(alignment: .leading, spacing: 10) {
-            Text(isReply ? "YOU SAID, IN KISWAHILI" : "THEY SAID, IN ENGLISH")
+            Text(isReply ? "YOU SAID, IN \(Langs.name(line.theirLang).uppercased())"
+                         : "THEY SAID, IN \(Langs.name(line.myLang).uppercased())")
                 .font(.caption.weight(.bold)).tracking(1.2)
                 .foregroundStyle(.white.opacity(0.8))
             Text(big)
@@ -115,11 +125,9 @@ struct LatestCard: View {
             HStack {
                 Text(line.time, style: .time).font(.caption).foregroundStyle(.white.opacity(0.75))
                 Spacer()
-                Button(action: replay) {
-                    Label(isReply ? "Sema tena" : "Hear again", systemImage: "speaker.wave.2.fill")
-                }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.bordered).tint(.white)
+                Button(action: replay) { Label("Hear again", systemImage: "speaker.wave.2.fill") }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered).tint(.white)
             }
         }
         .padding(18)
@@ -132,13 +140,15 @@ struct HistoryRow: View {
     let line: Line
     var body: some View {
         let isReply = line.kind == .reply
+        let main = isReply ? (line.theirs ?? "") : line.mine
+        let sub: String? = isReply ? line.mine : line.theirs
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: isReply ? "arrowshape.turn.up.left.fill" : "ear")
                 .foregroundStyle(isReply ? Color.tafsiriSun : Color.tafsiriGreen)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 3) {
-                Text(isReply ? (line.swahili ?? "") : line.english).font(.body)
-                if let sub = (isReply ? Optional(line.english) : line.swahili), !sub.isEmpty {
+                Text(main).font(.body)
+                if let sub, !sub.isEmpty {
                     Text(sub).font(.footnote).foregroundStyle(.secondary)
                 }
                 Text(line.time, style: .time).font(.caption2).foregroundStyle(.tertiary)
@@ -150,16 +160,19 @@ struct HistoryRow: View {
 
 struct EmptyState: View {
     @ObservedObject var engine: ListenEngine
+    let source: String
+    let target: String
+
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "ear.and.waveform")
                 .font(.system(size: 48))
                 .foregroundStyle(Color.tafsiriGreen)
-            Text(engine.isListening ? "Listening for Kiswahili" : "Hands-free Kiswahili ↔ English")
+            Text(engine.isListening ? "Listening for \(source)" : "Hands-free \(source) → \(target)")
                 .font(.title3.weight(.semibold))
             Text(engine.isListening
-                 ? "When someone speaks Kiswahili, the English appears here. Tap Reply and speak English to answer them in Kiswahili."
-                 : "Tap Start once. Tafsiri keeps listening, even in your pocket, and translates whenever it hears Kiswahili.")
+                 ? "When someone speaks \(source), the \(target) appears here and is spoken in your headphones. Tap Reply to answer them in \(source)."
+                 : "Tap Start once. Tafsiri keeps listening, even in your pocket, and translates whenever it hears \(source).")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -176,6 +189,7 @@ struct EmptyState: View {
 struct BottomBar: View {
     @ObservedObject var engine: ListenEngine
     @Binding var speakAloud: Bool
+    let replyLanguage: String
     let typeReply: () -> Void
 
     var body: some View {
@@ -183,7 +197,7 @@ struct BottomBar: View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
                 Button { Task { await engine.armReply() } } label: {
-                    Label(engine.replyArmed ? "Speak English now…" : "Reply in Kiswahili",
+                    Label(engine.replyArmed ? "Speak now…" : "Reply in \(replyLanguage)",
                           systemImage: engine.replyArmed ? "waveform" : "arrowshape.turn.up.left.fill")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 44)
@@ -204,7 +218,7 @@ struct BottomBar: View {
                         .font(.title2)
                         .frame(width: 48, height: 48)
                 }
-                .accessibilityLabel(speakAloud ? "Reading English aloud on" : "Reading English aloud off")
+                .accessibilityLabel(speakAloud ? "Speaking translations on" : "Speaking translations off")
 
                 Button { engine.toggle() } label: {
                     ZStack {

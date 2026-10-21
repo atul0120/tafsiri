@@ -2,7 +2,7 @@ import AVFoundation
 import SwiftUI
 
 /// The hands-free loop: listen → hear a pause → translate → speak → keep listening.
-/// Kiswahili it hears becomes English for you; your English replies become spoken Kiswahili.
+/// Their language (e.g. Kiswahili) becomes yours (e.g. English); your replies go back the other way.
 @MainActor
 final class ListenEngine: ObservableObject {
     enum ModelState: Equatable { case notLoaded, loading, ready, failed(String) }
@@ -12,10 +12,11 @@ final class ListenEngine: ObservableObject {
     @Published var hearingSpeech = false
     @Published var isTranslating = false
     @Published var level: Float = -80
-    @Published var status = "Tap Start. Tafsiri will translate any Kiswahili it hears."
+    @Published var status = "Tap Start. Tafsiri keeps listening and translates what it hears."
     @Published var modelState: ModelState = .notLoaded
-    /// When true, the next thing heard is your English reply.
+    /// When true, the next thing heard is your reply.
     @Published var replyArmed = false
+    @Published var headphonesConnected = Speaker.headphonesConnected
 
     private let recorder = UtteranceRecorder()
     private let interpreter = Interpreter()
@@ -28,9 +29,12 @@ final class ListenEngine: ObservableObject {
         recorder.onLevel = { [weak self] db in Task { @MainActor in self?.level = db } }
         recorder.onSpeaking = { [weak self] on in Task { @MainActor in self?.hearingSpeech = on } }
         recorder.onUtterance = { [weak self] samples in Task { @MainActor in self?.enqueue(samples) } }
-        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification,
-                                               object: nil, queue: .main) { [weak self] note in
+        let center = NotificationCenter.default
+        center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             Task { @MainActor in self?.handleInterruption(note) }
+        }
+        center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.routeChanged() }
         }
     }
 
@@ -65,13 +69,14 @@ final class ListenEngine: ObservableObject {
         }
         do {
             let session = AVAudioSession.sharedInstance()
-            // Phone mic listens; translations play in AirPods (A2DP) or the loudspeaker.
+            // The phone's own mic listens; sound goes to headphones (A2DP) or the loudspeaker.
             try session.setCategory(.playAndRecord, mode: .default,
                                     options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers])
             try session.setActive(true)
             recorder.pauseSeconds = Prefs.pauseSeconds
             try recorder.start()
             isListening = true
+            headphonesConnected = Speaker.headphonesConnected
             UIApplication.shared.isIdleTimerDisabled = true
             status = listeningText
         } catch {
@@ -95,15 +100,15 @@ final class ListenEngine: ObservableObject {
     func replay(_ line: Line) {
         Task {
             switch line.kind {
-            case .heard: await sayEnglish(line.english)
-            case .reply: if let sw = line.swahili { await saySwahili(sw) }
+            case .heard: await sayTranslation(line.mine, language: line.myLang, force: true)
+            case .reply: if let t = line.theirs { await sayReply(t, language: line.theirLang) }
             }
         }
     }
 
-    // MARK: Replying in Kiswahili
+    // MARK: Replying
 
-    /// Tap Reply, then speak English. The next pause sends it.
+    /// Tap Reply, then speak in your language. The next pause sends it.
     func armReply() async {
         guard Prefs.canReply else {
             status = "Add your Microsoft key, or choose the free MyMemory translator in Settings."
@@ -112,7 +117,7 @@ final class ListenEngine: ObservableObject {
         if !isListening { await start() }
         guard isListening else { return }
         replyArmed.toggle()
-        status = replyArmed ? "Speak your reply in English now…" : listeningText
+        status = replyArmed ? "Speak your reply in \(Prefs.targetName) now…" : listeningText
     }
 
     /// A reply you typed instead of spoke.
@@ -130,14 +135,15 @@ final class ListenEngine: ObservableObject {
         }
     }
 
-    private func sendReply(_ english: String) async {
+    private func sendReply(_ text: String) async {
+        let from = Prefs.target, to = Prefs.source
         isTranslating = true
         status = "Translating your reply…"
         do {
-            let swahili = try await ReplyService.translateToSwahili(english)
-            lines.insert(Line(kind: .reply, english: english, swahili: swahili), at: 0)
+            let translated = try await ReplyService.translate(text, from: from, to: to)
+            lines.insert(Line(kind: .reply, mine: text, theirs: translated, myLang: from, theirLang: to), at: 0)
             trim()
-            await saySwahili(swahili)
+            await sayReply(translated, language: to)
             status = isListening ? listeningText : "Ready."
         } catch {
             status = error.localizedDescription
@@ -165,100 +171,111 @@ final class ListenEngine: ObservableObject {
     private func handle(_ samples: [Float], isReply: Bool) async {
         isTranslating = true
         defer { pending -= 1; isTranslating = pending > 0 }
+        let source = Prefs.source, target = Prefs.target
         do {
             if isReply {
-                let english = try await interpreter.transcribeEnglish(samples)
-                if english.isEmpty { status = "Didn't catch that. Tap Reply and try again."; return }
-                await sendReply(english)
+                let said = try await interpreter.transcribe(samples, language: target)
+                if said.isEmpty { status = "Didn't catch that. Tap Reply and try again."; return }
+                await sendReply(said)
                 return
             }
 
-            if Prefs.engine == .offline {
-                await handleOffline(samples)
+            if Prefs.useOffline {
+                guard let heard = try await interpreter.translateOffline(samples, source: source,
+                                                                         forceSource: Prefs.assumeSource) else {
+                    status = listeningText
+                    return
+                }
+                if heard.language == target { await heardMine(heard.text); return }
+                await show(translation: heard.text, original: nil)
                 return
             }
 
-            guard let heard = try await interpreter.listen(samples, assumeSwahili: Prefs.assumeSwahili) else {
+            guard let heard = try await interpreter.listen(samples, source: source, target: target,
+                                                           forceSource: Prefs.assumeSource) else {
                 status = listeningText
                 return
             }
-            if heard.language == "en" {
-                if Prefs.autoReply && Prefs.canReply { await sendReply(heard.text) }
-                else { status = "Heard English, skipped." }
-                return
-            }
-            if Prefs.onlySwahili && !Prefs.assumeSwahili && heard.language != "sw" {
-                status = "Heard another language (\(heard.language)), skipped."
-                return
-            }
+            if heard.language == target { await heardMine(heard.text); return }
             guard Prefs.canReply else {
-                status = "No English yet: choose MyMemory (free) in Settings → Translate with, or add your Microsoft key."
+                status = "No translation yet: choose MyMemory (free) in Settings → Translate with, or add your Microsoft key."
                 return
             }
             status = "Translating…"
-            let english = try await ReplyService.translateToEnglish(heard.text)
-            lines.insert(Line(kind: .heard, english: english,
-                              swahili: Prefs.showOriginal ? heard.text : nil), at: 0)
-            trim()
-            if Prefs.speakAloud { await sayEnglish(english) }
-            status = listeningText
+            let translated = try await ReplyService.translate(heard.text, from: source, to: target)
+            await show(translation: translated, original: heard.text)
         } catch {
             status = "Translation error: \(error.localizedDescription)"
         }
     }
 
-    /// Offline: Whisper translates straight to English on the phone; no internet needed.
-    private func handleOffline(_ samples: [Float]) async {
-        do {
-            guard let heard = try await interpreter.translateOffline(samples, assumeSwahili: Prefs.assumeSwahili) else {
-                status = listeningText
-                return
-            }
-            if heard.language == "en" {
-                if Prefs.autoReply { await sendReply(heard.text) } else { status = "Heard English, skipped." }
-                return
-            }
-            if Prefs.onlySwahili && !Prefs.assumeSwahili && heard.language != "sw" {
-                status = "Heard another language (\(heard.language)), skipped."
-                return
-            }
-            lines.insert(Line(kind: .heard, english: heard.text, swahili: nil), at: 0)
-            trim()
-            if Prefs.speakAloud { await sayEnglish(heard.text) }
-            status = listeningText
-        } catch {
-            status = "Translation error: \(error.localizedDescription)"
-        }
+    /// Someone (probably you) spoke your own language.
+    private func heardMine(_ text: String) async {
+        if Prefs.autoReply && Prefs.canReply { await sendReply(text) }
+        else { status = "Heard \(Prefs.targetName), skipped." }
+    }
+
+    private func show(translation: String, original: String?) async {
+        lines.insert(Line(kind: .heard, mine: translation,
+                          theirs: Prefs.showOriginal ? original : nil,
+                          myLang: Prefs.target, theirLang: Prefs.source), at: 0)
+        trim()
+        await sayTranslation(translation, language: Prefs.target, force: false)
+        if !status.hasPrefix("Connect") { status = listeningText }
     }
 
     private func trim() { if lines.count > 200 { lines.removeLast() } }
 
     // MARK: Speaking
 
-    private func sayEnglish(_ text: String) async {
-        // With AirPods the mic keeps listening; on the loudspeaker it pauses so it won't hear itself.
+    /// Speaks a translation for you, following Settings → "Speak translations".
+    /// `force` (tapping "Hear again") plays it even when no headphones are connected.
+    private func sayTranslation(_ text: String, language: String, force: Bool) async {
+        if !force {
+            guard Prefs.speakAloud else { return }
+            switch Prefs.speakWhere {
+            case .off:
+                return
+            case .headphones:
+                guard Speaker.headphonesConnected else {
+                    status = "Connect headphones to hear translations. Showing text only."
+                    return
+                }
+            case .anywhere:
+                break
+            }
+        }
+        // On the loudspeaker the mic pauses so it doesn't hear itself; with headphones it keeps listening.
         let mute = Speaker.usingPhoneSpeaker
         if mute { recorder.isPaused = true }
-        await speaker.speakEnglish(text)
+        let spoke = await speaker.speak(text, language: language)
+        if !spoke { status = "This iPhone has no \(Langs.name(language)) voice. Add one in iPhone Settings → Accessibility → Spoken Content → Voices." }
         if mute { await resumeMic() }
     }
 
-    /// Kiswahili replies are for the other person, so by default they play on the phone's loudspeaker
-    /// even when you wear AirPods.
-    private func saySwahili(_ text: String) async {
+    /// Speaks your reply in their language, following Settings → "Speak my replies on".
+    private func sayReply(_ text: String, language: String) async {
         let session = AVAudioSession.sharedInstance()
-        if Prefs.replyOnSpeaker { try? session.overrideOutputAudioPort(.speaker) }
+        let forceSpeaker = Prefs.replyWhere == .speaker
+        if forceSpeaker { try? session.overrideOutputAudioPort(.speaker) }
         recorder.isPaused = true
-        let audio = try? await ReplyService.swahiliAudio(text)
-        let spoke = await speaker.speakSwahili(text, audio: audio)
-        if !spoke { status = "Show them the screen. Add a Speech key in Settings for a Kiswahili voice." }
-        if Prefs.replyOnSpeaker { try? session.overrideOutputAudioPort(.none) }
+        let audio = try? await ReplyService.voiceAudio(text, language: language)
+        let spoke = await speaker.speak(text, language: language, audio: audio)
+        if !spoke {
+            status = "Show them the screen: this iPhone has no \(Langs.name(language)) voice."
+        }
+        if forceSpeaker { try? session.overrideOutputAudioPort(.none) }
         await resumeMic()
     }
 
     private func resumeMic() async {
         try? await Task.sleep(for: .milliseconds(250))
         recorder.isPaused = false
+    }
+
+    private func routeChanged() {
+        headphonesConnected = Speaker.headphonesConnected
+        if isListening && !isTranslating { status = listeningText }
     }
 
     private func handleInterruption(_ note: Notification) {
@@ -272,8 +289,12 @@ final class ListenEngine: ObservableObject {
         }
     }
 
-    private var listeningText: String {
-        if Prefs.autoReply && Prefs.canReply { return "Listening… Kiswahili → English, your English → Kiswahili" }
-        return Prefs.onlySwahili ? "Listening for Kiswahili…" : "Listening… translating anything not in English"
+    var listeningText: String {
+        var t = "Listening for \(Prefs.sourceName) → \(Prefs.targetName)"
+        if Prefs.autoReply && Prefs.canReply { t += ", auto-reply on" }
+        if Prefs.speakAloud && Prefs.speakWhere == .headphones && !Speaker.headphonesConnected {
+            t += " (text only until headphones connect)"
+        }
+        return t + "…"
     }
 }

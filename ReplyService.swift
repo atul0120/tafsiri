@@ -8,14 +8,6 @@ enum ReplyService {
         var errorDescription: String? { message }
     }
 
-    static func translateToSwahili(_ english: String) async throws -> String {
-        try await translate(english, from: "en", to: "sw")
-    }
-
-    static func translateToEnglish(_ swahili: String) async throws -> String {
-        try await translate(swahili, from: "sw", to: "en")
-    }
-
     /// Uses Microsoft when chosen in Settings, otherwise the free MyMemory service.
     static func translate(_ text: String, from: String, to: String) async throws -> String {
         if Prefs.engine == .microsoft { return try await microsoft(text, from: from, to: to) }
@@ -29,7 +21,7 @@ enum ReplyService {
         for chunk in chunks(text, maxBytes: 450) {          // the service takes up to 500 bytes per request
             var url = URLComponents(string: "https://api.mymemory.translated.net/get")!
             var items = [URLQueryItem(name: "q", value: chunk),
-                         URLQueryItem(name: "langpair", value: "\(from)|\(to)")]
+                         URLQueryItem(name: "langpair", value: "\(code(from, ms: false))|\(code(to, ms: false))")]
             if !Prefs.myMemoryEmail.isEmpty { items.append(URLQueryItem(name: "de", value: Prefs.myMemoryEmail)) }
             url.queryItems = items
             var request = URLRequest(url: url.url!)
@@ -71,6 +63,11 @@ enum ReplyService {
         return out
     }
 
+    /// Chinese needs a script/region suffix on these services.
+    private static func code(_ c: String, ms: Bool) -> String {
+        c == "zh" ? (ms ? "zh-Hans" : "zh-CN") : c
+    }
+
     private static func normalized(_ s: String) -> String {
         s.lowercased().filter { $0.isLetter || $0.isNumber }
     }
@@ -92,8 +89,8 @@ enum ReplyService {
         }
         var url = URLComponents(string: "https://api.cognitive.microsofttranslator.com/translate")!
         url.queryItems = [.init(name: "api-version", value: "3.0"),
-                          .init(name: "from", value: from),
-                          .init(name: "to", value: to)]
+                          .init(name: "from", value: code(from, ms: true)),
+                          .init(name: "to", value: code(to, ms: true))]
         var request = URLRequest(url: url.url!)
         request.httpMethod = "POST"
         request.timeoutInterval = 15
@@ -115,8 +112,10 @@ enum ReplyService {
         return text
     }
 
-    /// Returns MP3 audio of the Kiswahili text, or nil when no Speech key is set.
-    static func swahiliAudio(_ text: String) async throws -> Data? {
+    /// Returns MP3 audio in a natural Microsoft voice, or nil when there is no Speech key
+    /// or the language isn't Kiswahili (other languages use the iPhone's own voices).
+    static func voiceAudio(_ text: String, language: String) async throws -> Data? {
+        guard language == "sw" else { return nil }
         let key = Prefs.speechKey
         let region = Prefs.speechRegion.trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty, !region.isEmpty else { return nil }

@@ -1,7 +1,6 @@
 import AVFoundation
 
-/// Plays translations: English with the iPhone's own voice, Kiswahili replies with the
-/// Microsoft Kenyan voice (or an iPhone Kiswahili voice if one is installed).
+/// Speaks text with the iPhone's voices, or plays ready-made audio (the Microsoft Kenyan voice).
 @MainActor
 final class Speaker: NSObject {
     private let synth = AVSpeechSynthesizer()
@@ -13,14 +12,10 @@ final class Speaker: NSObject {
         synth.delegate = self
     }
 
-    func speakEnglish(_ text: String) async {
-        await speakBuiltIn(text, voice: AVSpeechSynthesisVoice(language: "en-GB") ?? AVSpeechSynthesisVoice(language: "en-US"))
-    }
-
-    /// Speaks Kiswahili. Returns false if there was no way to voice it.
-    func speakSwahili(_ text: String, audio: Data?) async -> Bool {
+    /// Speaks `text` in `language` ("en", "sw", …). Returns false if there was no voice for it.
+    func speak(_ text: String, language: String, audio: Data? = nil) async -> Bool {
+        stop()
         if let audio, let p = try? AVAudioPlayer(data: audio) {
-            stop()
             player = p
             p.delegate = self
             await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
@@ -29,15 +24,7 @@ final class Speaker: NSObject {
             }
             return true
         }
-        if let v = AVSpeechSynthesisVoice.speechVoices().first(where: { $0.language.lowercased().hasPrefix("sw") }) {
-            await speakBuiltIn(text, voice: v)
-            return true
-        }
-        return false
-    }
-
-    private func speakBuiltIn(_ text: String, voice: AVSpeechSynthesisVoice?) async {
-        stop()
+        guard let voice = Self.voice(for: language) else { return false }
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             done = c
             let u = AVSpeechUtterance(string: text)
@@ -45,6 +32,14 @@ final class Speaker: NSObject {
             u.rate = AVSpeechUtteranceDefaultSpeechRate * 1.02
             synth.speak(u)
         }
+        return true
+    }
+
+    static func voice(for language: String) -> AVSpeechSynthesisVoice? {
+        let preferred = ["en": "en-GB", "sw": "sw-KE", "hi": "hi-IN", "fr": "fr-FR", "ar": "ar-001",
+                         "pt": "pt-PT", "es": "es-ES", "zh": "zh-CN"][language]
+        if let p = preferred, let v = AVSpeechSynthesisVoice(language: p) { return v }
+        return AVSpeechSynthesisVoice.speechVoices().first { $0.language.lowercased().hasPrefix(language) }
     }
 
     func stop() {
@@ -63,6 +58,13 @@ final class Speaker: NSObject {
         AVAudioSession.sharedInstance().currentRoute.outputs.contains {
             $0.portType == .builtInSpeaker || $0.portType == .builtInReceiver
         }
+    }
+
+    /// True when wired, USB or Bluetooth headphones/earbuds (e.g. AirPods) are connected.
+    static var headphonesConnected: Bool {
+        let kinds: Set<AVAudioSession.Port> = [.headphones, .bluetoothA2DP, .bluetoothHFP,
+                                               .bluetoothLE, .usbAudio]
+        return AVAudioSession.sharedInstance().currentRoute.outputs.contains { kinds.contains($0.portType) }
     }
 }
 

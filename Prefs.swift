@@ -1,34 +1,65 @@
 import Foundation
 import Security
 
+/// Languages the app can listen for and translate into (Whisper / translator codes).
+enum Langs {
+    static let listenOptions: [(code: String, name: String)] = [
+        ("sw", "Kiswahili"), ("so", "Somali"), ("am", "Amharic"), ("ar", "Arabic"),
+        ("fr", "French"), ("pt", "Portuguese"), ("hi", "Hindi"), ("zh", "Chinese"),
+        ("ln", "Lingala"), ("ha", "Hausa"), ("yo", "Yoruba"), ("es", "Spanish"), ("en", "English")
+    ]
+    static let translateOptions: [(code: String, name: String)] = [
+        ("en", "English"), ("hi", "Hindi"), ("sw", "Kiswahili"), ("fr", "French"),
+        ("ar", "Arabic"), ("pt", "Portuguese"), ("es", "Spanish"), ("zh", "Chinese")
+    ]
+
+    static func name(_ code: String) -> String {
+        (listenOptions + translateOptions).first { $0.code == code }?.name ?? code.uppercased()
+    }
+}
+
 /// User settings, stored on the phone. Views bind to the same keys with @AppStorage.
 enum Prefs {
     enum Key {
         static let model = "model"
         static let speakAloud = "speakAloud"
         static let showOriginal = "showOriginal"
-        static let onlySwahili = "onlySwahili"
-        static let assumeSwahili = "assumeSwahili"
+        static let assumeSwahili = "assumeSwahili"      // "everyone around me speaks <listen language>"
         static let pauseSeconds = "pauseSeconds"
         static let autoReply = "autoReply"
-        static let replyOnSpeaker = "replyOnSpeaker"
         static let translatorRegion = "translatorRegion"
         static let speechRegion = "speechRegion"
         static let swahiliVoice = "swahiliVoice"
         static let engine = "engine"
         static let myMemoryEmail = "myMemoryEmail"
+        static let sourceLang = "sourceLang"
+        static let targetLang = "targetLang"
+        static let speakWhere = "speakWhere"
+        static let replyWhere = "replyWhere"
     }
 
-    /// How Kiswahili becomes English (and your English becomes Kiswahili).
+    /// How speech is translated.
     enum Engine: String, CaseIterable {
         case mymemory    // free online service, no signup
-        case offline     // Whisper translates on the phone, no internet
+        case offline     // Whisper translates on the phone, no internet (into English only)
         case microsoft   // Microsoft Translator, needs a free Azure key
+    }
+
+    /// Where translations of what you hear are spoken.
+    enum SpeakWhere: String, CaseIterable {
+        case headphones  // only when headphones are connected; otherwise text only
+        case anywhere    // headphones if connected, otherwise the loudspeaker
+        case off         // never; text only
+    }
+
+    /// Where your replies (in their language) are spoken.
+    enum ReplyWhere: String, CaseIterable {
+        case speaker     // phone loudspeaker, so the other person hears it
+        case headphones  // wherever sound is going (headphones if connected)
     }
 
     /// Whisper model that can translate to English itself (the turbo model can't).
     static let offlineModel = "large-v2_949MB"
-
     /// Accurate model recommended for iPhone (about 626 MB download, once).
     static let accurateModel = "large-v3-v20240930_626MB"
     /// Smaller, faster model; noticeably weaker on Kiswahili.
@@ -39,16 +70,18 @@ enum Prefs {
             Key.model: accurateModel,
             Key.speakAloud: true,
             Key.showOriginal: false,
-            Key.onlySwahili: true,
             Key.assumeSwahili: false,
             Key.pauseSeconds: 0.8,
             Key.autoReply: false,
-            Key.replyOnSpeaker: true,
             Key.translatorRegion: "southafricanorth",
             Key.speechRegion: "southafricanorth",
             Key.swahiliVoice: "sw-KE-ZuriNeural",
             Key.engine: Engine.mymemory.rawValue,
-            Key.myMemoryEmail: ""
+            Key.myMemoryEmail: "",
+            Key.sourceLang: "sw",
+            Key.targetLang: "en",
+            Key.speakWhere: SpeakWhere.headphones.rawValue,
+            Key.replyWhere: ReplyWhere.speaker.rawValue
         ])
     }
 
@@ -56,14 +89,18 @@ enum Prefs {
     static var model: String { d.string(forKey: Key.model) ?? accurateModel }
     static var speakAloud: Bool { d.bool(forKey: Key.speakAloud) }
     static var showOriginal: Bool { d.bool(forKey: Key.showOriginal) }
-    static var onlySwahili: Bool { d.bool(forKey: Key.onlySwahili) }
-    static var assumeSwahili: Bool { d.bool(forKey: Key.assumeSwahili) }
+    static var assumeSource: Bool { d.bool(forKey: Key.assumeSwahili) }
     static var pauseSeconds: Double { d.double(forKey: Key.pauseSeconds) }
     static var autoReply: Bool { d.bool(forKey: Key.autoReply) }
-    static var replyOnSpeaker: Bool { d.bool(forKey: Key.replyOnSpeaker) }
     static var translatorRegion: String { d.string(forKey: Key.translatorRegion) ?? "" }
     static var speechRegion: String { d.string(forKey: Key.speechRegion) ?? "" }
     static var swahiliVoice: String { d.string(forKey: Key.swahiliVoice) ?? "sw-KE-ZuriNeural" }
+    static var source: String { d.string(forKey: Key.sourceLang) ?? "sw" }
+    static var target: String { d.string(forKey: Key.targetLang) ?? "en" }
+    static var sourceName: String { Langs.name(source) }
+    static var targetName: String { Langs.name(target) }
+    static var speakWhere: SpeakWhere { SpeakWhere(rawValue: d.string(forKey: Key.speakWhere) ?? "") ?? .headphones }
+    static var replyWhere: ReplyWhere { ReplyWhere(rawValue: d.string(forKey: Key.replyWhere) ?? "") ?? .speaker }
 
     // Free Microsoft keys, kept in the Keychain.
     static let translatorKeyName = "ms_translator_key"
@@ -72,8 +109,10 @@ enum Prefs {
     static var speechKey: String { Keychain.get(speechKeyName) }
     static var engine: Engine { Engine(rawValue: d.string(forKey: Key.engine) ?? "") ?? .mymemory }
     static var myMemoryEmail: String { (d.string(forKey: Key.myMemoryEmail) ?? "").trimmingCharacters(in: .whitespaces) }
+    /// Offline translation works only into English; otherwise fall back to online translation.
+    static var useOffline: Bool { engine == .offline && target == "en" }
     /// The model actually loaded: offline translation needs the translation-capable model.
-    static var effectiveModel: String { engine == .offline ? offlineModel : model }
+    static var effectiveModel: String { useOffline ? offlineModel : model }
     /// Online translation is available (MyMemory needs nothing; Microsoft needs its key).
     static var canReply: Bool { engine != .microsoft || !translatorKey.isEmpty }
 }
@@ -108,9 +147,12 @@ struct Line: Identifiable, Equatable {
     enum Kind { case heard, reply }
     let id = UUID()
     let kind: Kind
-    /// For `.heard`: the English translation. For `.reply`: what you said in English.
-    let english: String
-    /// For `.heard`: the original Kiswahili (optional). For `.reply`: the Kiswahili translation.
-    let swahili: String?
+    /// Text in YOUR language: the translation of what you heard, or what you said.
+    let mine: String
+    /// Text in THEIR language: what they said (when shown), or your reply translated.
+    let theirs: String?
+    /// Language codes, so replays use the right voice.
+    let myLang: String
+    let theirLang: String
     let time = Date()
 }

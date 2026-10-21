@@ -3,12 +3,10 @@ import WhisperKit
 
 /// Runs OpenAI's Whisper speech model on the iPhone (via WhisperKit) to write down what
 /// people say and tell which language it is. Free, private and offline once downloaded.
-/// (The recommended "turbo" model is excellent at writing down Kiswahili but does not
-/// translate, so translation is done separately.)
 actor Interpreter {
     struct Heard {
         let language: String   // e.g. "sw", "en"
-        let text: String       // what was said, in that language
+        let text: String
     }
 
     private var pipe: WhisperKit?
@@ -26,47 +24,46 @@ actor Interpreter {
         loadedModel = model
     }
 
-    /// Writes down one utterance and detects its language.
-    func listen(_ samples: [Float], assumeSwahili: Bool) async throws -> Heard? {
+    /// Writes down one utterance. Returns it as `target` (you speaking) or `source` (them).
+    /// Anything else is treated as `source`, because Whisper often mistakes Kiswahili
+    /// for Indonesian, Malay or Somali.
+    func listen(_ samples: [Float], source: String, target: String, forceSource: Bool) async throws -> Heard? {
         guard let pipe else { return nil }
-        let options = Self.options(language: assumeSwahili ? "sw" : nil)
-        let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
-        let text = Self.clean(results.map(\.text).joined(separator: " "))
+        let first = try await pipe.transcribe(audioArray: samples,
+                                              decodeOptions: Self.options(language: forceSource ? source : nil))
+        let text = Self.clean(first.map(\.text).joined(separator: " "))
         guard !text.isEmpty else { return nil }
-        let detected = assumeSwahili ? "sw" : (results.first?.language ?? "sw")
-        if detected == "en" || detected == "sw" { return Heard(language: detected, text: text) }
+        let detected = forceSource ? source : (first.first?.language ?? source)
+        if detected == source || detected == target { return Heard(language: detected, text: text) }
 
-        // Whisper often mistakes Kiswahili for Indonesian, Malay, Somali and others.
-        // Anything that isn't English is treated as Kiswahili and written down again as Kiswahili.
-        let again = try await pipe.transcribe(audioArray: samples, decodeOptions: Self.options(language: "sw"))
-        let swText = Self.clean(again.map(\.text).joined(separator: " "))
-        return swText.isEmpty ? nil : Heard(language: "sw", text: swText)
+        let again = try await pipe.transcribe(audioArray: samples, decodeOptions: Self.options(language: source))
+        let forced = Self.clean(again.map(\.text).joined(separator: " "))
+        return forced.isEmpty ? nil : Heard(language: source, text: forced)
     }
 
-    /// Offline mode: Whisper translates the speech straight into English on the phone.
-    /// Needs a translation-capable model (Prefs.offlineModel).
-    func translateOffline(_ samples: [Float], assumeSwahili: Bool) async throws -> Heard? {
+    /// Offline mode: Whisper translates speech straight into English on the phone.
+    /// Returns language "en" with the English if the speaker was already speaking English.
+    func translateOffline(_ samples: [Float], source: String, forceSource: Bool) async throws -> Heard? {
         guard let pipe else { return nil }
-        var options = Self.options(language: assumeSwahili ? "sw" : nil)
+        var options = Self.options(language: forceSource ? source : nil)
         options.task = .translate
-        let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
-        let text = Self.clean(results.map(\.text).joined(separator: " "))
+        let first = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+        let text = Self.clean(first.map(\.text).joined(separator: " "))
         guard !text.isEmpty else { return nil }
-        let detected = assumeSwahili ? "sw" : (results.first?.language ?? "sw")
-        if detected == "en" || detected == "sw" { return Heard(language: detected, text: text) }
+        let detected = forceSource ? source : (first.first?.language ?? source)
+        if detected == source || detected == "en" { return Heard(language: detected, text: text) }
 
-        // Misdetected (often as Indonesian): translate again, telling Whisper it's Kiswahili.
-        var forced = Self.options(language: "sw")
+        var forced = Self.options(language: source)
         forced.task = .translate
         let again = try await pipe.transcribe(audioArray: samples, decodeOptions: forced)
         let english = Self.clean(again.map(\.text).joined(separator: " "))
-        return english.isEmpty ? nil : Heard(language: "sw", text: english)   // text is English here
+        return english.isEmpty ? nil : Heard(language: source, text: english)
     }
 
-    /// Writes down English speech (used when you reply).
-    func transcribeEnglish(_ samples: [Float]) async throws -> String {
+    /// Writes down speech in a known language (used for your replies).
+    func transcribe(_ samples: [Float], language: String) async throws -> String {
         guard let pipe else { return "" }
-        let results = try await pipe.transcribe(audioArray: samples, decodeOptions: Self.options(language: "en"))
+        let results = try await pipe.transcribe(audioArray: samples, decodeOptions: Self.options(language: language))
         return Self.clean(results.map(\.text).joined(separator: " "))
     }
 
