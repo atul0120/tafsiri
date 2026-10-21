@@ -39,9 +39,9 @@ final class ListenEngine: ObservableObject {
     func loadModel() async {
         if case .loading = modelState { return }
         modelState = .loading
-        status = "Preparing the speech model. The first time it downloads about 600 MB and sets itself up for this iPhone, which can take 5–10 minutes. Keep the app open on Wi-Fi."
+        status = "Preparing the speech model. The first time it downloads 600–950 MB and sets itself up for this iPhone, which can take 5–10 minutes. Keep the app open on Wi-Fi."
         do {
-            try await interpreter.load(model: Prefs.model)
+            try await interpreter.load(model: Prefs.effectiveModel)
             modelState = .ready
             status = isListening ? listeningText : "Ready. Tap Start."
         } catch {
@@ -106,7 +106,7 @@ final class ListenEngine: ObservableObject {
     /// Tap Reply, then speak English. The next pause sends it.
     func armReply() async {
         guard Prefs.canReply else {
-            status = "To reply in Kiswahili, add your free Microsoft Translator key in Settings."
+            status = "Add your Microsoft key, or choose the free MyMemory translator in Settings."
             return
         }
         if !isListening { await start() }
@@ -173,6 +173,11 @@ final class ListenEngine: ObservableObject {
                 return
             }
 
+            if Prefs.engine == .offline {
+                await handleOffline(samples)
+                return
+            }
+
             guard let heard = try await interpreter.listen(samples, assumeSwahili: Prefs.assumeSwahili) else {
                 status = listeningText
                 return
@@ -190,7 +195,7 @@ final class ListenEngine: ObservableObject {
                 // No translator key yet: show what was said so the app is still useful.
                 lines.insert(Line(kind: .heard, english: heard.text, swahili: nil), at: 0)
                 trim()
-                status = "Showing Kiswahili only. Add your free Microsoft Translator key in Settings to get English."
+                status = "Showing Kiswahili only. Add your Microsoft key, or choose the free MyMemory translator in Settings."
                 return
             }
             status = "Translating…"
@@ -199,6 +204,30 @@ final class ListenEngine: ObservableObject {
                               swahili: Prefs.showOriginal ? heard.text : nil), at: 0)
             trim()
             if Prefs.speakAloud { await sayEnglish(english) }
+            status = listeningText
+        } catch {
+            status = "Translation error: \(error.localizedDescription)"
+        }
+    }
+
+    /// Offline: Whisper translates straight to English on the phone; no internet needed.
+    private func handleOffline(_ samples: [Float]) async {
+        do {
+            guard let heard = try await interpreter.translateOffline(samples, assumeSwahili: Prefs.assumeSwahili) else {
+                status = listeningText
+                return
+            }
+            if heard.language == "en" {
+                if Prefs.autoReply { await sendReply(heard.text) } else { status = "Heard English, skipped." }
+                return
+            }
+            if Prefs.onlySwahili && !Prefs.assumeSwahili && heard.language != "sw" {
+                status = "Heard another language (\(heard.language)), skipped."
+                return
+            }
+            lines.insert(Line(kind: .heard, english: heard.text, swahili: nil), at: 0)
+            trim()
+            if Prefs.speakAloud { await sayEnglish(heard.text) }
             status = listeningText
         } catch {
             status = "Translation error: \(error.localizedDescription)"

@@ -15,7 +15,19 @@ enum Prefs {
         static let translatorRegion = "translatorRegion"
         static let speechRegion = "speechRegion"
         static let swahiliVoice = "swahiliVoice"
+        static let engine = "engine"
+        static let myMemoryEmail = "myMemoryEmail"
     }
+
+    /// How Kiswahili becomes English (and your English becomes Kiswahili).
+    enum Engine: String, CaseIterable {
+        case mymemory    // free online service, no signup
+        case offline     // Whisper translates on the phone, no internet
+        case microsoft   // Microsoft Translator, needs a free Azure key
+    }
+
+    /// Whisper model that can translate to English itself (the turbo model can't).
+    static let offlineModel = "large-v2_949MB"
 
     /// Accurate model recommended for iPhone (about 626 MB download, once).
     static let accurateModel = "large-v3-v20240930_626MB"
@@ -34,7 +46,9 @@ enum Prefs {
             Key.replyOnSpeaker: true,
             Key.translatorRegion: "southafricanorth",
             Key.speechRegion: "southafricanorth",
-            Key.swahiliVoice: "sw-KE-ZuriNeural"
+            Key.swahiliVoice: "sw-KE-ZuriNeural",
+            Key.engine: Engine.mymemory.rawValue,
+            Key.myMemoryEmail: ""
         ])
     }
 
@@ -56,7 +70,12 @@ enum Prefs {
     static let speechKeyName = "ms_speech_key"
     static var translatorKey: String { Keychain.get(translatorKeyName) }
     static var speechKey: String { Keychain.get(speechKeyName) }
-    static var canReply: Bool { !translatorKey.isEmpty }
+    static var engine: Engine { Engine(rawValue: d.string(forKey: Key.engine) ?? "") ?? .mymemory }
+    static var myMemoryEmail: String { (d.string(forKey: Key.myMemoryEmail) ?? "").trimmingCharacters(in: .whitespaces) }
+    /// The model actually loaded: offline translation needs the translation-capable model.
+    static var effectiveModel: String { engine == .offline ? offlineModel : model }
+    /// Online translation is available (MyMemory needs nothing; Microsoft needs its key).
+    static var canReply: Bool { engine != .microsoft || !translatorKey.isEmpty }
 }
 
 /// Stores keys encrypted in the iPhone Keychain.

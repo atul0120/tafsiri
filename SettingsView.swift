@@ -15,14 +15,44 @@ struct SettingsView: View {
     @AppStorage(Prefs.Key.translatorRegion) private var translatorRegion = "southafricanorth"
     @AppStorage(Prefs.Key.speechRegion) private var speechRegion = "southafricanorth"
     @AppStorage(Prefs.Key.swahiliVoice) private var swahiliVoice = "sw-KE-ZuriNeural"
+    @AppStorage(Prefs.Key.engine) private var engineChoice = Prefs.Engine.mymemory.rawValue
+    @AppStorage(Prefs.Key.myMemoryEmail) private var myMemoryEmail = ""
 
     @State private var translatorKey = Prefs.translatorKey
     @State private var speechKey = Prefs.speechKey
     @State private var modelAtOpen = ""
 
+    private var engineFooter: String {
+        switch Prefs.Engine(rawValue: engineChoice) ?? .mymemory {
+        case .mymemory:
+            return "No signup. The phone writes down the Kiswahili, then MyMemory's free service turns it into English (and your replies into Kiswahili). Needs internet; there is a daily free limit. Adding an email is optional and is what MyMemory asks heavier users to provide."
+        case .offline:
+            return "No internet needed. Uses a larger speech model (about 950 MB, downloaded once on Wi-Fi) that translates speech straight into English. Slower and less accurate than MyMemory. Replies still use MyMemory online."
+        case .microsoft:
+            return "Best quality. Needs a free Microsoft Translator key (below), which requires an Azure account."
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("Translate with", selection: $engineChoice) {
+                        Text("MyMemory (free, online)").tag(Prefs.Engine.mymemory.rawValue)
+                        Text("On this iPhone (free, offline)").tag(Prefs.Engine.offline.rawValue)
+                        Text("Microsoft (free key needed)").tag(Prefs.Engine.microsoft.rawValue)
+                    }
+                    if engineChoice == Prefs.Engine.mymemory.rawValue {
+                        TextField("Your email (optional)", text: $myMemoryEmail)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                } header: {
+                    Text("English translation")
+                } footer: {
+                    Text(engineFooter)
+                }
+
                 Section {
                     Toggle("Read translations aloud", isOn: $speakAloud)
                     Toggle("Only translate Kiswahili", isOn: $onlySwahili)
@@ -82,18 +112,18 @@ struct SettingsView: View {
                 } header: {
                     Text("On-device model")
                 } footer: {
-                    Text("Downloaded once. Listening and English translation then work offline, and what you hear never leaves the phone. Only your replies go to Microsoft.")
+                    Text("Used to hear speech. Downloaded once; it then works without internet. The \"On this iPhone\" translation option uses its own larger model (about 950 MB) instead of this one.")
                 }
             }
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
-            .onAppear { modelAtOpen = model }
+            .onAppear { modelAtOpen = Prefs.effectiveModel }
             .onDisappear {
                 Keychain.set(translatorKey.trimmingCharacters(in: .whitespacesAndNewlines), for: Prefs.translatorKeyName)
                 Keychain.set(speechKey.trimmingCharacters(in: .whitespacesAndNewlines), for: Prefs.speechKeyName)
-                if model != modelAtOpen {
+                if Prefs.effectiveModel != modelAtOpen {
                     if engine.isListening { engine.stop() }
                     engine.modelState = .notLoaded
                     Task { await engine.loadModel() }

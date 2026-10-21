@@ -37,6 +37,19 @@ actor Interpreter {
         return Heard(language: language, text: text)
     }
 
+    /// Offline mode: Whisper translates the speech straight into English on the phone.
+    /// Needs a translation-capable model (Prefs.offlineModel).
+    func translateOffline(_ samples: [Float], assumeSwahili: Bool) async throws -> Heard? {
+        guard let pipe else { return nil }
+        var options = Self.options(language: assumeSwahili ? "sw" : nil)
+        options.task = .translate
+        let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+        let text = Self.clean(results.map(\.text).joined(separator: " "))
+        guard !text.isEmpty else { return nil }
+        let language = assumeSwahili ? "sw" : (results.first?.language ?? "sw")
+        return Heard(language: language, text: text)   // text is English here
+    }
+
     /// Writes down English speech (used when you reply).
     func transcribeEnglish(_ samples: [Float]) async throws -> String {
         guard let pipe else { return "" }
